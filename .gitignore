@@ -1,0 +1,96 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.pdf
+*.docx
+*.doc
+*.txt
+*.png
+*.jpg
+*.jpeg
+*.tiff
+*.bmp
+*.gif
+!screenshots/*.png  # Allow screenshots in the screenshots folder
+
+# Cache
+doc_summarizer_cache/
+*.cache
+.cache/
+
+# Environment variables
+.env
+.env.local
+
+# API keys
+api_keys.txt
+config.ini
+
+# Gradio
+flagged/
+gradio_cached_examples/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+temp/
+tmp/
+*.tmp
+
+# NLTK data (if stored locally)
+nltk_data/
+
+# Model files
+*.pkl
+*.h5
+*.model
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
