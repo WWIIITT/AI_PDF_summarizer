@@ -3,7 +3,6 @@
 <div align="center">
 
 [![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Gradio](https://img.shields.io/badge/Gradio-4.0+-orange.svg)](https://www.gradio.app/)
 [![DeepSeek](https://img.shields.io/badge/API-DeepSeek-purple.svg)](https://www.deepseek.com/)
 
