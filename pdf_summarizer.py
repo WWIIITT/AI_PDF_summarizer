@@ -256,7 +256,7 @@ class EnhancedDocumentSummarizer:
             if (len(ocr_pages) == total_pages or self.is_text_corrupted(extracted_text)) and not self.ocr_available:
                 return """❌ This appears to be a scanned PDF or contains non-standard encoding that requires OCR to read properly.
 
-The PDF contains Chinese text that cannot be extracted without OCR tools.
+The PDF contains text that cannot be extracted without OCR tools.
 
 To process this document, please:
 1. Install OCR dependencies:
@@ -416,10 +416,18 @@ Please ensure OCR tools are installed (see instructions above) or try converting
             sentences = re.split(r'[.。！!？?]', text)
             return [s.strip() for s in sentences if s.strip()][:num_sentences]
 
-    def create_detailed_summary_prompt(self, include_quotes: bool = True):
-        """Create enhanced prompt for detailed summaries"""
+    def create_detailed_summary_prompt(self, include_quotes: bool = True, output_language: str = "auto"):
+        """Create enhanced prompt for detailed summaries with language control"""
+        # Language instructions based on user preference
+        if output_language == "chinese":
+            lang_instruction = "Provide the summary in Chinese (中文), regardless of the source language."
+        elif output_language == "english":
+            lang_instruction = "Provide the summary in English, regardless of the source language."
+        else:
+            lang_instruction = "If the text is in Chinese, provide the summary in Chinese; if in English, summarize in English."
+
         if include_quotes:
-            return """You are an expert document analyst fluent in both English and Chinese. Create a comprehensive summary of the following text.
+            return f"""You are an expert document analyst fluent in both English and Chinese. Create a comprehensive summary of the following text.
 
 INSTRUCTIONS:
 1. Provide a detailed summary covering all major points and important details
@@ -428,22 +436,22 @@ INSTRUCTIONS:
 4. Organize the summary with clear sections if the content has multiple topics
 5. Highlight any critical findings, conclusions, or recommendations
 6. Preserve important numbers, dates, and specific facts
-7. If the text is in Chinese, provide the summary in Chinese; if in English, summarize in English
+7. {lang_instruction}
 
 TEXT TO SUMMARIZE:
-{text}
+{{text}}
 
 DETAILED SUMMARY WITH QUOTES:"""
         else:
-            return """Create a detailed summary of the following text, including all key points and important details. 
-If the text is in Chinese, provide the summary in Chinese; if in English, summarize in English:
+            return f"""Create a detailed summary of the following text, including all key points and important details. 
+{lang_instruction}
 
-{text}
+{{text}}
 
 DETAILED SUMMARY:"""
 
-    def summarize_text(self, text, summary_type="concise", include_quotes=False):
-        """Enhanced summarization with quote extraction for detailed mode"""
+    def summarize_text(self, text, summary_type="concise", include_quotes=False, output_language="auto"):
+        """Enhanced summarization with quote extraction for detailed mode and language control"""
         if not text or text.startswith("Error") or text.startswith("❌") or text.startswith("Unsupported"):
             return text
 
@@ -454,53 +462,61 @@ DETAILED SUMMARY:"""
         if not documents:
             return "No content found to summarize."
 
+        # Language instructions based on user preference
+        if output_language == "chinese":
+            lang_instruction = "Write the summary in Chinese (中文), regardless of the source language."
+        elif output_language == "english":
+            lang_instruction = "Write the summary in English, regardless of the source language."
+        else:
+            lang_instruction = "If the text is primarily in Chinese, write the summary in Chinese. If primarily in English, write in English."
+
         # Define different summary prompts
         prompts = {
-            "concise": """Write a concise summary of the following text in 2-3 paragraphs.
-If the text is primarily in Chinese, write the summary in Chinese. If primarily in English, write in English:
+            "concise": f"""Write a concise summary of the following text in 2-3 paragraphs.
+{lang_instruction}
 
-{text}
+{{text}}
 
 CONCISE SUMMARY:""",
 
-            "detailed": self.create_detailed_summary_prompt(include_quotes),
+            "detailed": self.create_detailed_summary_prompt(include_quotes, output_language),
 
-            "bullet_points": """Create a comprehensive bullet-point summary of the following text:
+            "bullet_points": f"""Create a comprehensive bullet-point summary of the following text:
 
 INSTRUCTIONS:
 - Use main bullets for major topics
 - Use sub-bullets for supporting details
 - Include important facts, figures, and dates
 - Organize logically by theme or chronology
-- If the text is in Chinese, write the summary in Chinese; if in English, write in English
+- {lang_instruction}
 
-{text}
+{{text}}
 
 BULLET POINT SUMMARY:""",
 
-            "key_insights": """Extract the key insights and takeaways from the following text:
+            "key_insights": f"""Extract the key insights and takeaways from the following text:
 
 INSTRUCTIONS:
 1. Identify 5-7 most important insights
 2. Explain why each insight matters
 3. Include any actionable recommendations
 4. Note any surprising findings
-5. If the text is in Chinese, write in Chinese; if in English, write in English
+5. {lang_instruction}
 
-{text}
+{{text}}
 
 KEY INSIGHTS:""",
 
-            "chapter_wise": """Create a chapter-by-chapter or section-by-section summary:
+            "chapter_wise": f"""Create a chapter-by-chapter or section-by-section summary:
 
 INSTRUCTIONS:
 1. Identify major sections or chapters
 2. Summarize each section separately
 3. Note key themes that connect sections
 4. Include transitions between topics
-5. If the text is in Chinese, write the summary in Chinese; if in English, write in English
+5. {lang_instruction}
 
-{text}
+{{text}}
 
 CHAPTER-WISE SUMMARY:"""
         }
@@ -511,9 +527,9 @@ CHAPTER-WISE SUMMARY:"""
             # For longer documents, use map-reduce with custom prompts
             if len(documents) > 1:
                 map_prompt = PromptTemplate(
-                    template="""Summarize this section of the document (maintain the original language):
+                    template=f"""Summarize this section of the document. {lang_instruction}
 
-{text}
+{{text}}
 
 SECTION SUMMARY:""",
                     input_variables=["text"]
@@ -535,7 +551,7 @@ SECTION SUMMARY:""",
             else:
                 messages = [
                     SystemMessage(
-                        content="You are an expert document analyst fluent in multiple languages including English and Chinese. Create clear, informative, and well-structured summaries."),
+                        content="You are an expert document analyst fluent in multiple languages including English and Chinese. Create clear, informative, and well-structured summaries. Always follow the language instructions provided."),
                     HumanMessage(content=prompt_template.format(text=text))
                 ]
                 response = self.llm(messages)
@@ -617,7 +633,7 @@ SECTION SUMMARY:""",
 
 
 def create_enhanced_gradio_interface():
-    """Create the enhanced Gradio interface with OCR support"""
+    """Create the enhanced Gradio interface with OCR support and language selection"""
 
     summarizer = None
 
@@ -634,8 +650,11 @@ def create_enhanced_gradio_interface():
                     status_msg = f"""✅ API Key set successfully! | {ocr_status} | {chinese_status}
 
 ⚠️ **Note**: OCR is not available. To process scanned PDFs or images:
-1. Install: `pip install pytesseract pdf2image pillow opencv-python-headless`
-2. Install Tesseract OCR system software
+1. Install Python packages: `pip install pytesseract pdf2image pillow opencv-python-headless`
+2. Install Tesseract OCR software:
+   - Windows: Download from https://github.com/UB-Mannheim/tesseract/wiki
+   - Mac: brew install tesseract tesseract-lang
+   - Linux: sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra
 3. For better Chinese PDF support: `pip install pdfplumber`"""
                 else:
                     status_msg = f"✅ API Key set successfully! | {ocr_status} | {chinese_status}"
@@ -687,7 +706,8 @@ def create_enhanced_gradio_interface():
         except Exception as e:
             return f"❌ Error analyzing document: {str(e)}"
 
-    def process_document(file, summary_type, include_quotes, use_ocr, ocr_language, progress=gr.Progress()):
+    def process_document(file, summary_type, include_quotes, use_ocr, ocr_language, output_language,
+                         progress=gr.Progress()):
         """Process the uploaded document and return summary"""
         global summarizer
 
@@ -719,8 +739,8 @@ def create_enhanced_gradio_interface():
 
             progress(0.6, desc="Generating summary...")
 
-            # Generate summary
-            summary = summarizer.summarize_text(text, summary_type, include_quotes)
+            # Generate summary with language preference
+            summary = summarizer.summarize_text(text, summary_type, include_quotes, output_language)
 
             progress(1.0, desc="Complete!")
 
@@ -736,18 +756,17 @@ def create_enhanced_gradio_interface():
             # 📚 Enhanced Document Summarizer with Chinese OCR Support
             ## 增强版文档摘要生成器（支持中文OCR）
 
-            Upload documents (including scanned PDFs and images) and get AI-powered summaries in multiple languages.
-            上传文档（包括扫描的PDF和图片）并获得AI生成的多语言摘要。
+            Upload documents (including scanned PDFs and images) and get AI-powered summaries in your preferred language.
+            上传文档（包括扫描的PDF和图片）并获得您偏好语言的AI生成摘要。
 
             **✨ Features 功能特点:**
             - 🔍 OCR support for scanned documents and images (支持扫描文档和图片的OCR)
             - 🇨🇳 Chinese and English text recognition (中英文文本识别)
+            - 🌐 Choose output language independently (独立选择输出语言)
             - 📄 Multiple file format support (多种文件格式支持)
             - 💬 Quote extraction in detailed mode (详细模式下的引用提取)
             - 📊 Document structure analysis (文档结构分析)
             - 🎯 Multiple summary formats (多种摘要格式)
-
-            **⚠️ Current Status**: OCR dependencies not installed. Some features limited.
             """
         )
 
@@ -760,7 +779,7 @@ def create_enhanced_gradio_interface():
                     type="password"
                 )
                 api_key_button = gr.Button("Set API Key 设置密钥", variant="primary")
-                api_key_status = gr.Textbox(label="Status 状态", interactive=False, lines=4)
+                api_key_status = gr.Textbox(label="Status 状态", interactive=False, lines=5)
 
             with gr.Column(scale=2):
                 gr.Markdown("### 📤 Document Upload 文档上传")
@@ -807,6 +826,18 @@ def create_enhanced_gradio_interface():
                     label="OCR Language 语言设置"
                 )
 
+                # New output language selection
+                output_language = gr.Radio(
+                    choices=[
+                        ("Auto (same as source) 自动（与源文档相同）", "auto"),
+                        ("Chinese 中文输出", "chinese"),
+                        ("English 英文输出", "english")
+                    ],
+                    value="auto",
+                    label="Output Language 输出语言",
+                    info="Choose the language for your summary regardless of the source document language"
+                )
+
                 summarize_button = gr.Button("🚀 Generate Summary 生成摘要", variant="primary", size="lg")
 
         gr.Markdown("### 📋 Summary Output 摘要输出")
@@ -833,47 +864,53 @@ def create_enhanced_gradio_interface():
 
         summarize_button.click(
             fn=process_document,
-            inputs=[file_input, summary_type, include_quotes, use_ocr, ocr_language],
+            inputs=[file_input, summary_type, include_quotes, use_ocr, ocr_language, output_language],
             outputs=[output_text]
         )
 
         # Enhanced tips section
         gr.Markdown(
             """
-            ### 💡 Troubleshooting Chinese PDFs 中文PDF故障排除:
+            ### 💡 Quick Setup Guide 快速设置指南:
 
-            **If you see corrupted text 如果看到乱码:**
-            1. **Without OCR 无OCR情况下**: Install pdfplumber for better Chinese support
+            **To Enable OCR (Required for scanned documents) 启用OCR（扫描文档必需）:**
+
+            1. **Install Python packages 安装Python包:**
+               ```bash
+               pip install pytesseract pdf2image pillow opencv-python-headless
+               ```
+
+            2. **Install Tesseract OCR Software 安装Tesseract OCR软件:**
+               - **Windows**: 
+                 - Download installer from: https://github.com/UB-Mannheim/tesseract/wiki
+                 - During installation, select "Additional language data" → Chinese (Simplified & Traditional)
+
+               - **Mac**: 
+                 ```bash
+                 brew install tesseract
+                 brew install tesseract-lang  # Installs all language packs
+                 ```
+
+               - **Linux**: 
+                 ```bash
+                 sudo apt-get install tesseract-ocr
+                 sudo apt-get install tesseract-ocr-chi-sim tesseract-ocr-chi-tra
+                 ```
+
+            3. **For better Chinese PDF support 更好的中文PDF支持:**
                ```bash
                pip install pdfplumber
                ```
 
-            2. **With OCR 使用OCR**: Install full OCR stack
-               ```bash
-               pip install pytesseract pdf2image pillow opencv-python-headless
-               # Plus Tesseract system software + Chinese language packs
-               ```
+            ### 🌐 Output Language Options 输出语言选项:
+            - **Auto 自动**: Summary in the same language as the source document
+            - **Chinese 中文**: Always output in Chinese, even for English documents
+            - **English 英文**: Always output in English, even for Chinese documents
 
-            **Common Issues 常见问题:**
-            - 📄 **Scanned PDFs**: Require OCR to extract text (扫描PDF需要OCR)
-            - 🔤 **Special fonts**: Some PDFs use embedded fonts that need OCR (特殊字体需要OCR)
-            - 💾 **Encoding issues**: Try pdfplumber first, then OCR (编码问题先试pdfplumber)
-
-            ### 🔧 Quick Setup for Chinese Documents 中文文档快速设置:
-            ```bash
-            # Minimal setup (without OCR)
-            pip install pdfplumber
-
-            # Full setup (with OCR)
-            pip install pytesseract pdf2image pillow opencv-python-headless pdfplumber
-            # Plus install Tesseract + Chinese language packs
-            ```
-
-            ### ⚠️ Current Limitations 当前限制:
-            Since OCR is not installed, the system will:
-            - Try pdfplumber for better Chinese PDF support
-            - Fall back to PyPDF2 (may produce corrupted text for some Chinese PDFs)
-            - Show clear error messages if OCR is required
+            ### ❓ Common Issues 常见问题:
+            - **"OCR Not Available"**: Tesseract software not installed (not just the Python package)
+            - **"Chinese OCR Not Ready"**: Chinese language packs not installed for Tesseract
+            - **Corrupted text**: Try enabling OCR or installing pdfplumber
             """
         )
 
@@ -894,7 +931,10 @@ def print_requirements():
     FULL SETUP (with OCR support):
     pip install gradio langchain langchain-community PyPDF2 python-docx openai nltk pdfplumber pytesseract pdf2image pillow opencv-python-headless
 
-    Then install Tesseract OCR system software + Chinese language packs.
+    Then install Tesseract OCR software:
+    - Windows: https://github.com/UB-Mannheim/tesseract/wiki
+    - Mac: brew install tesseract tesseract-lang
+    - Linux: sudo apt-get install tesseract-ocr tesseract-ocr-chi-sim tesseract-ocr-chi-tra
 
     ====================================
     """)
