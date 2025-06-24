@@ -10,7 +10,6 @@ An intelligent document summarization tool powered by DeepSeek API with OCR capa
 
 一个由DeepSeek API驱动的智能文档摘要工具，具备OCR功能，可处理扫描文档。支持中英文双语界面。
 
-[English](#english) | [中文](#chinese)
 
 </div>
 
@@ -214,6 +213,21 @@ cache_dir = tempfile.gettempdir()
 3. **Text Splitter**: Manages large documents | 管理大型文档
 4. **Summarizer**: Generates various summary types | 生成各种摘要类型
 5. **Cache Manager**: Improves performance | 提升性能
+
+### Project Structure
+```
+AI_PDF_summarizer/
+├── images/                   
+│   ├── main-interface1.png
+│   ├── main-interface2.png
+│
+├── README.md                 # Main documentation
+├── requirements.txt         # Python dependencies
+├── .gitignore              # Git ignore file
+├── .env.example            # Example environment variables
+│
+└── pdf_summarizer.py       # Main application file
+```
 
 ## 🤝 Contributing | 贡献
 
