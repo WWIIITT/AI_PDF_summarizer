@@ -21,11 +21,13 @@ import logging
 import hashlib
 import json
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
 import time
 from functools import lru_cache
 import threading
 from queue import Queue
+import gc
+import psutil
 
 # Suppress warnings
 logging.getLogger("langchain.text_splitter").setLevel(logging.ERROR)
@@ -35,7 +37,7 @@ logging.getLogger("langchain_community.chat_models.openai").setLevel(logging.ERR
 OCR_AVAILABLE = False
 try:
     import pytesseract
-    from pdf2image import convert_from_path
+    from pdf2image import convert_from_path, convert_from_bytes
     from PIL import Image
     import numpy as np
     import cv2
@@ -82,28 +84,40 @@ class DocumentCache:
     def load_index(self):
         """Load cache index"""
         if self.cache_index.exists():
-            with open(self.cache_index, 'r') as f:
-                self.index = json.load(f)
+            try:
+                with open(self.cache_index, 'r') as f:
+                    self.index = json.load(f)
+            except:
+                self.index = {}
         else:
             self.index = {}
 
     def save_index(self):
         """Save cache index"""
-        with open(self.cache_index, 'w') as f:
-            json.dump(self.index, f)
+        try:
+            with open(self.cache_index, 'w') as f:
+                json.dump(self.index, f)
+        except:
+            pass
 
     def get_file_hash(self, file_path):
         """Get hash of file for cache key"""
-        hasher = hashlib.md5()
-        with open(file_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hasher.update(chunk)
-        return hasher.hexdigest()
+        try:
+            hasher = hashlib.md5()
+            with open(file_path, 'rb') as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hasher.update(chunk)
+            return hasher.hexdigest()
+        except:
+            return None
 
     def get(self, file_path, cache_type="text"):
         """Get cached result if exists"""
         try:
             file_hash = self.get_file_hash(file_path)
+            if not file_hash:
+                return None
+
             cache_key = f"{file_hash}_{cache_type}"
 
             if cache_key in self.index:
@@ -119,6 +133,9 @@ class DocumentCache:
         """Cache result"""
         try:
             file_hash = self.get_file_hash(file_path)
+            if not file_hash:
+                return
+
             cache_key = f"{file_hash}_{cache_type}"
             cache_file = self.cache_path / f"{cache_key}.txt"
 
@@ -140,7 +157,7 @@ class OptimizedDocumentSummarizer:
             openai_api_base='https://api.deepseek.com',
             max_tokens=2048,
             temperature=0.3,
-            streaming=True  # Enable streaming
+            streaming=True
         )
 
         # Text splitters
@@ -155,14 +172,17 @@ class OptimizedDocumentSummarizer:
         # Initialize cache
         self.cache = DocumentCache()
 
-        # Thread pool for parallel processing
-        self.executor = ThreadPoolExecutor(max_workers=4)
+        # Thread pool for parallel processing (reduced workers to avoid overload)
+        self.executor = ThreadPoolExecutor(max_workers=2)
 
         # OCR configuration
         self.ocr_available = False
         self.chinese_ocr_available = False
         if OCR_AVAILABLE:
             self.configure_ocr()
+
+        # Add cancellation token
+        self.cancel_processing = False
 
     def configure_ocr(self):
         """Configure OCR settings"""
@@ -176,11 +196,14 @@ class OptimizedDocumentSummarizer:
             self.chinese_ocr_available = False
 
     def extract_text_from_pdf_fast(self, file_path, use_ocr_if_needed=True, ocr_language='auto',
-                                   quality='balanced', progress_callback=None):
-        """Optimized PDF extraction with parallel OCR processing"""
+                                   quality='balanced', progress_callback=None, max_ocr_pages=20):
+        """Optimized PDF extraction with timeout and page limits"""
+
+        # Reset cancellation token
+        self.cancel_processing = False
 
         # Check cache first
-        cache_key = f"{quality}_{ocr_language}_ocr{use_ocr_if_needed}"
+        cache_key = f"{quality}_{ocr_language}_ocr{use_ocr_if_needed}_max{max_ocr_pages}"
         cached_text = self.cache.get(file_path, cache_key)
         if cached_text:
             if progress_callback:
@@ -196,11 +219,14 @@ class OptimizedDocumentSummarizer:
             with pdfplumber.open(file_path) as pdf:
                 total_pages = len(pdf.pages)
 
-                # Quick scan to check if OCR is needed
+                # Quick scan to check if OCR is needed (only check first 3 pages)
                 sample_pages = min(3, total_pages)
                 needs_ocr = False
 
                 for i in range(sample_pages):
+                    if self.cancel_processing:
+                        return "Processing cancelled by user."
+
                     page_text = pdf.pages[i].extract_text() or ""
                     if self.is_scanned_pdf_page(page_text) or self.is_text_corrupted(page_text):
                         needs_ocr = True
@@ -209,6 +235,9 @@ class OptimizedDocumentSummarizer:
                 if not needs_ocr:
                     # Extract all text quickly
                     for i, page in enumerate(pdf.pages):
+                        if self.cancel_processing:
+                            return "Processing cancelled by user."
+
                         if progress_callback:
                             progress_callback(i / total_pages, f"Extracting page {i + 1}/{total_pages}")
 
@@ -219,79 +248,171 @@ class OptimizedDocumentSummarizer:
                     if extracted_text:
                         self.cache.set(file_path, extracted_text, cache_key)
                         return extracted_text
-        except:
-            pass
+        except Exception as e:
+            print(f"PDFPlumber error: {str(e)}")
 
         # If fast extraction failed or OCR is needed
         if use_ocr_if_needed and self.ocr_available:
-            return self._extract_with_parallel_ocr(file_path, ocr_language, quality, progress_callback)
+            return self._extract_with_limited_ocr(file_path, ocr_language, quality, progress_callback, max_ocr_pages)
         else:
             # Fallback to PyPDF2
             return self._extract_with_pypdf2(file_path, progress_callback)
 
-    def _extract_with_parallel_ocr(self, file_path, ocr_language, quality, progress_callback):
-        """Extract text using parallel OCR processing"""
+    def _extract_with_limited_ocr(self, file_path, ocr_language, quality, progress_callback, max_ocr_pages):
+        """Extract text using OCR with page limits and timeout"""
 
-        # Determine DPI based on quality setting
+        # Determine DPI based on quality setting (reduced for better performance)
         dpi_settings = {
-            'fast': 150,
-            'balanced': 200,
-            'high': 300
+            'fast': 100,  # Reduced from 150
+            'balanced': 150,  # Reduced from 200
+            'high': 200  # Reduced from 300
         }
-        dpi = dpi_settings.get(quality, 200)
+        dpi = dpi_settings.get(quality, 150)
 
         try:
-            # Convert PDF to images
+            # First, get total page count without converting all pages
+            with open(file_path, 'rb') as file:
+                pdf_reader = PyPDF2.PdfReader(file)
+                total_pages = len(pdf_reader.pages)
+
             if progress_callback:
-                progress_callback(0.1, "Converting PDF to images...")
+                progress_callback(0.1, f"PDF has {total_pages} pages. Will OCR up to {max_ocr_pages} pages...")
 
-            images = convert_from_path(file_path, dpi=dpi, thread_count=4)
-            total_pages = len(images)
+            # Limit pages to process
+            pages_to_process = min(total_pages, max_ocr_pages)
 
-            # Process pages in parallel
-            extracted_pages = {}
-            completed = 0
-
-            def process_page(page_num, image):
-                """Process a single page with OCR"""
-                try:
-                    # Quick check if page needs OCR
-                    text = self.extract_text_with_ocr(image, preprocess=(quality == 'high'),
-                                                      language=ocr_language)
-                    return page_num, text
-                except Exception as e:
-                    return page_num, f"Error on page {page_num}: {str(e)}"
-
-            # Submit all pages for processing
-            futures = []
-            for i, image in enumerate(images):
-                future = self.executor.submit(process_page, i + 1, image)
-                futures.append(future)
-
-            # Collect results as they complete
-            for future in as_completed(futures):
-                page_num, text = future.result()
-                extracted_pages[page_num] = text
-                completed += 1
-
-                if progress_callback:
-                    progress_callback(0.1 + (0.9 * completed / total_pages),
-                                      f"OCR processing: {completed}/{total_pages} pages")
-
-            # Assemble text in order
+            # Convert only the pages we need
             extracted_text = ""
-            for i in range(1, total_pages + 1):
-                if i in extracted_pages:
-                    extracted_text += f"\n--- Page {i}/{total_pages} (OCR) ---\n{extracted_pages[i]}\n"
+
+            # Process pages in smaller batches to avoid memory issues
+            batch_size = 5
+
+            for batch_start in range(0, pages_to_process, batch_size):
+                if self.cancel_processing:
+                    return "Processing cancelled by user."
+
+                batch_end = min(batch_start + batch_size, pages_to_process)
+
+                # Convert batch of pages
+                try:
+                    if progress_callback:
+                        progress_callback(
+                            0.1 + (0.8 * batch_start / pages_to_process),
+                            f"Converting pages {batch_start + 1}-{batch_end}..."
+                        )
+
+                    # Convert specific page range
+                    images = convert_from_path(
+                        file_path,
+                        dpi=dpi,
+                        first_page=batch_start + 1,
+                        last_page=batch_end,
+                        thread_count=2,
+                        fmt='jpeg',  # JPEG is faster than PNG
+                        jpegopt={'quality': 75, 'optimize': True}
+                    )
+
+                    # Process batch
+                    for i, image in enumerate(images):
+                        if self.cancel_processing:
+                            return "Processing cancelled by user."
+
+                        page_num = batch_start + i + 1
+
+                        if progress_callback:
+                            progress_callback(
+                                0.1 + (0.8 * page_num / pages_to_process),
+                                f"OCR processing page {page_num}/{pages_to_process}..."
+                            )
+
+                        try:
+                            # Process with timeout
+                            text = self._ocr_with_timeout(image, ocr_language, quality, timeout=30)
+                            if text and text != "OCR timeout" and text != "OCR Error":
+                                extracted_text += f"\n--- Page {page_num}/{total_pages} (OCR) ---\n{text}\n"
+                        except Exception as e:
+                            print(f"Error processing page {page_num}: {str(e)}")
+                            extracted_text += f"\n--- Page {page_num}/{total_pages} (OCR Failed) ---\n[OCR failed for this page]\n"
+
+                    # Clear memory after each batch
+                    del images
+                    gc.collect()
+
+                except Exception as e:
+                    print(f"Error converting batch {batch_start}-{batch_end}: {str(e)}")
+                    continue
+
+            # Add note about remaining pages if any
+            if total_pages > pages_to_process:
+                extracted_text += f"\n\n--- Note: OCR processed first {pages_to_process} pages out of {total_pages} total pages ---\n"
 
             # Cache the result
-            cache_key = f"{quality}_{ocr_language}_ocrTrue"
+            cache_key = f"{quality}_{ocr_language}_ocrTrue_max{max_ocr_pages}"
             self.cache.set(file_path, extracted_text, cache_key)
 
-            return extracted_text
+            return extracted_text if extracted_text else "No text could be extracted with OCR."
 
         except Exception as e:
             return f"Error during OCR processing: {str(e)}"
+
+    def _ocr_with_timeout(self, image, ocr_language, quality, timeout=30):
+        """Run OCR with timeout"""
+        import signal
+        from contextlib import contextmanager
+
+        @contextmanager
+        def timeout_handler(seconds):
+            def timeout_func(signum, frame):
+                raise TimeoutError("OCR timeout")
+
+            if platform.system() != 'Windows':
+                # Unix-based timeout
+                signal.signal(signal.SIGALRM, timeout_func)
+                signal.alarm(seconds)
+                try:
+                    yield
+                finally:
+                    signal.alarm(0)
+            else:
+                # Windows doesn't support SIGALRM, use threading
+                timer = threading.Timer(seconds, lambda: None)
+                timer.start()
+                try:
+                    yield
+                finally:
+                    timer.cancel()
+
+        try:
+            # Use threading for timeout on Windows
+            result = [None]
+            exception = [None]
+
+            def run_ocr():
+                try:
+                    result[0] = self.extract_text_with_ocr(
+                        image,
+                        preprocess=(quality == 'high'),
+                        language=ocr_language
+                    )
+                except Exception as e:
+                    exception[0] = e
+
+            thread = threading.Thread(target=run_ocr)
+            thread.daemon = True
+            thread.start()
+            thread.join(timeout)
+
+            if thread.is_alive():
+                # OCR is still running after timeout
+                return "OCR timeout"
+
+            if exception[0]:
+                raise exception[0]
+
+            return result[0] or "No text extracted"
+
+        except Exception as e:
+            return f"OCR Error: {str(e)}"
 
     def _extract_with_pypdf2(self, file_path, progress_callback):
         """Fallback extraction using PyPDF2"""
@@ -302,6 +423,9 @@ class OptimizedDocumentSummarizer:
                 total_pages = len(pdf_reader.pages)
 
                 for i, page in enumerate(pdf_reader.pages):
+                    if self.cancel_processing:
+                        return "Processing cancelled by user."
+
                     if progress_callback:
                         progress_callback(i / total_pages, f"Extracting page {i + 1}/{total_pages}")
 
@@ -317,27 +441,36 @@ class OptimizedDocumentSummarizer:
             return f"Error reading PDF: {str(e)}"
 
     def preprocess_image_for_ocr(self, image):
-        """Optimized image preprocessing"""
+        """Optimized image preprocessing - simplified for speed"""
         if not OCR_AVAILABLE:
             return image
 
-        # Convert to numpy array
-        img_array = np.array(image)
+        try:
+            # Resize if too large (for faster OCR)
+            max_dimension = 2000
+            if image.width > max_dimension or image.height > max_dimension:
+                ratio = max_dimension / max(image.width, image.height)
+                new_size = (int(image.width * ratio), int(image.height * ratio))
+                image = image.resize(new_size, Image.Resampling.LANCZOS)
 
-        # Quick grayscale conversion
-        if len(img_array.shape) == 3:
-            gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
-        else:
-            gray = img_array
+            # Convert to numpy array
+            img_array = np.array(image)
 
-        # Simple thresholding
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # Quick grayscale conversion
+            if len(img_array.shape) == 3:
+                gray = cv2.cvtColor(img_array, cv2.COLOR_RGB2GRAY)
+            else:
+                gray = img_array
 
-        return Image.fromarray(thresh)
+            # Simple thresholding (skip complex preprocessing for speed)
+            _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    @lru_cache(maxsize=100)
+            return Image.fromarray(thresh)
+        except:
+            return image
+
     def extract_text_with_ocr(self, image, preprocess=True, language='auto'):
-        """Cached OCR extraction"""
+        """Optimized OCR extraction"""
         if not self.ocr_available or not OCR_AVAILABLE:
             return "OCR not available."
 
@@ -348,15 +481,15 @@ class OptimizedDocumentSummarizer:
             # Determine OCR language
             ocr_lang = 'eng'
             if language == 'chinese' and self.chinese_ocr_available:
-                ocr_lang = 'chi_sim+chi_tra+eng'
-            elif language == 'auto' and self.chinese_ocr_available:
-                ocr_lang = 'eng+chi_sim+chi_tra'
+                ocr_lang = 'chi_sim+eng'  # Simplified: just use chi_sim with English
+            elif language == 'auto':
+                ocr_lang = 'eng'  # Default to English for speed
 
             # Perform OCR with optimized settings
             text = pytesseract.image_to_string(
                 image,
                 lang=ocr_lang,
-                config='--psm 3 --oem 1'  # Use LSTM OCR engine mode for better speed
+                config='--psm 3 --oem 1 -c tessedit_do_invert=0'  # Optimized config
             )
 
             return text.strip()
@@ -390,7 +523,7 @@ class OptimizedDocumentSummarizer:
             # Extract paragraphs
             for paragraph in doc.paragraphs:
                 if paragraph.text.strip():
-                    if paragraph.style.name.startswith('Heading'):
+                    if paragraph.style and paragraph.style.name.startswith('Heading'):
                         text_parts.append(f"\n## {paragraph.text}\n")
                     else:
                         text_parts.append(paragraph.text)
@@ -411,13 +544,19 @@ class OptimizedDocumentSummarizer:
         except Exception as e:
             return f"Error reading Word document: {str(e)}"
 
-    def get_file_text(self, file_path, ocr_language='auto', quality='balanced', progress_callback=None):
+    def get_file_text(self, file_path, ocr_language='auto', quality='balanced',
+                      progress_callback=None, max_ocr_pages=20):
         """Extract text with progress tracking"""
         file_lower = file_path.lower()
 
         if file_lower.endswith('.pdf'):
-            return self.extract_text_from_pdf_fast(file_path, ocr_language=ocr_language,
-                                                   quality=quality, progress_callback=progress_callback)
+            return self.extract_text_from_pdf_fast(
+                file_path,
+                ocr_language=ocr_language,
+                quality=quality,
+                progress_callback=progress_callback,
+                max_ocr_pages=max_ocr_pages
+            )
         elif file_lower.endswith(('.docx', '.doc')):
             return self.extract_text_from_docx(file_path)
         elif file_lower.endswith(('.png', '.jpg', '.jpeg', '.tiff', '.bmp', '.gif')):
@@ -568,6 +707,10 @@ class OptimizedDocumentSummarizer:
         }
         return analysis
 
+    def cancel_current_processing(self):
+        """Cancel current processing operation"""
+        self.cancel_processing = True
+
 
 def create_optimized_gradio_interface():
     """Create the optimized Gradio interface"""
@@ -601,30 +744,37 @@ def create_optimized_gradio_interface():
 
         try:
             # Quick text extraction for analysis
-            text = summarizer.get_file_text(file.name, quality='fast')
+            text = summarizer.get_file_text(file.name, quality='fast', max_ocr_pages=1)
 
             if text.startswith("Error") or text.startswith("❌"):
                 return text
 
             analysis = summarizer.analyze_document_structure(text)
 
+            # Get file size
+            file_size_mb = os.path.getsize(file.name) / (1024 * 1024)
+
             return f"""📊 **Document Analysis:**
 
+• **File Size:** {file_size_mb:.2f} MB
 • **Total Words:** {analysis['total_words']:,}
 • **Detected Language:** {analysis['detected_language']}
 • **Text Quality:** {analysis['text_quality']}
 • **Recommended Summary:** {analysis['recommended_summary']}
 
 💡 **Performance Tips:**
+• For large PDFs (>50 pages), consider limiting OCR pages
 • Use 'Fast' quality for quick results
 • Use 'Balanced' for optimal speed/quality
 • Enable caching for repeated processing
+
+⚠️ **Note:** If the document is scanned, OCR processing may take several minutes.
 """
         except Exception as e:
             return f"❌ Error: {str(e)}"
 
     def process_document(file, summary_type, include_quotes, use_ocr, ocr_language,
-                         output_language, quality, progress=gr.Progress()):
+                         output_language, quality, max_ocr_pages, progress=gr.Progress()):
         """Process document with progress tracking"""
         nonlocal summarizer
 
@@ -651,7 +801,8 @@ def create_optimized_gradio_interface():
                 file.name,
                 ocr_language=ocr_language,
                 quality=quality,
-                progress_callback=update_progress
+                progress_callback=update_progress,
+                max_ocr_pages=max_ocr_pages
             )
 
             # Restore OCR state
@@ -688,7 +839,10 @@ def create_optimized_gradio_interface():
                 # Clear cache files
                 cache_files = list(summarizer.cache.cache_path.glob("*.txt"))
                 for f in cache_files:
-                    f.unlink()
+                    try:
+                        f.unlink()
+                    except:
+                        pass
 
                 # Clear index
                 summarizer.cache.index = {}
@@ -698,6 +852,14 @@ def create_optimized_gradio_interface():
         except Exception as e:
             return f"❌ Error clearing cache: {str(e)}"
 
+    def cancel_processing():
+        """Cancel current processing"""
+        nonlocal summarizer
+        if summarizer:
+            summarizer.cancel_current_processing()
+            return "⚠️ Processing cancellation requested..."
+        return "No active processing to cancel"
+
     # Create the interface
     with gr.Blocks(title="Optimized Document Summarizer", theme=gr.themes.Soft()) as interface:
         gr.Markdown(
@@ -706,11 +868,13 @@ def create_optimized_gradio_interface():
             ## 高速文档摘要生成器
 
             **🚀 Performance Features:**
-            - ⚡ Parallel OCR processing for multi-page documents
+            - ⚡ Parallel OCR processing with timeout protection
             - 💾 Intelligent caching for repeated documents
             - 🔄 Streaming responses for faster feedback
             - 🎯 Quality settings for speed/accuracy balance
             - 📊 Real-time progress tracking
+            - ⏹️ Cancellable operations
+            - 🔢 Page limit controls for OCR
             """
         )
 
@@ -760,12 +924,21 @@ def create_optimized_gradio_interface():
 
                 quality = gr.Radio(
                     choices=[
-                        ("🚀 Fast (150 DPI)", "fast"),
-                        ("⚖️ Balanced (200 DPI)", "balanced"),
-                        ("🎯 High Quality (300 DPI)", "high")
+                        ("🚀 Fast (100 DPI)", "fast"),
+                        ("⚖️ Balanced (150 DPI)", "balanced"),
+                        ("🎯 High Quality (200 DPI)", "high")
                     ],
                     value="balanced",
                     label="Processing Quality"
+                )
+
+                max_ocr_pages = gr.Slider(
+                    minimum=1,
+                    maximum=100,
+                    value=20,
+                    step=1,
+                    label="Maximum OCR Pages (for large PDFs)",
+                    info="Limit OCR processing to first N pages to avoid timeout"
                 )
 
                 include_quotes = gr.Checkbox(
@@ -798,7 +971,9 @@ def create_optimized_gradio_interface():
                     label="Output Language"
                 )
 
-                summarize_button = gr.Button("🚀 Generate Summary", variant="primary", size="lg")
+                with gr.Row():
+                    summarize_button = gr.Button("🚀 Generate Summary", variant="primary", size="lg")
+                    cancel_button = gr.Button("⏹️ Cancel", variant="stop", size="sm")
 
         gr.Markdown("### 📋 Summary Output")
         output_text = gr.Textbox(
@@ -824,7 +999,7 @@ def create_optimized_gradio_interface():
         summarize_button.click(
             fn=process_document,
             inputs=[file_input, summary_type, include_quotes, use_ocr, ocr_language,
-                    output_language, quality],
+                    output_language, quality, max_ocr_pages],
             outputs=[output_text]
         )
 
@@ -834,23 +1009,40 @@ def create_optimized_gradio_interface():
             outputs=[cache_status]
         )
 
+        cancel_button.click(
+            fn=cancel_processing,
+            inputs=[],
+            outputs=[output_text]
+        )
+
         gr.Markdown(
             """
             ### ⚡ Performance Tips:
 
-            1. **Use Fast mode** for quick document overview (50% faster)
-            2. **Enable caching** - Reprocessing cached documents is instant
-            3. **Disable OCR** if your PDFs have selectable text
-            4. **Use Balanced mode** for optimal speed/quality trade-off
-            5. **High Quality mode** only for critical documents with poor scan quality
+            1. **For large PDFs with OCR:**
+               - Limit OCR pages (e.g., 10-20 pages) to avoid timeout
+               - Use Fast mode for initial testing
+               - Consider processing in batches
+
+            2. **If OCR is taking too long:**
+               - Click Cancel button to stop processing
+               - Try with fewer pages
+               - Use Fast quality setting
+               - Disable OCR if text is already selectable
+
+            3. **General tips:**
+               - Enable caching - Reprocessing cached documents is instant
+               - Use Balanced mode for optimal speed/quality trade-off
+               - High Quality mode only for critical documents with poor scan quality
 
             ### 🛠️ Technical Optimizations:
-            - Parallel OCR processing (4x faster for multi-page documents)
-            - Smart caching system (instant repeated processing)
-            - Streaming LLM responses (see results faster)
-            - Optimized image preprocessing pipeline
-            - Concurrent page processing
-            - Memory-efficient chunk processing
+            - OCR timeout protection (30 seconds per page)
+            - Memory-efficient batch processing
+            - Page limit controls
+            - Reduced DPI settings for faster processing
+            - Cancellable operations
+            - Smart caching system
+            - Optimized image preprocessing
             """
         )
 
@@ -863,15 +1055,16 @@ if __name__ == "__main__":
     OPTIMIZED DOCUMENT SUMMARIZER
     ====================================
 
-    Performance improvements:
-    - 4x faster OCR with parallel processing
-    - Intelligent caching system
-    - Streaming responses
-    - Quality/speed options
-    - Progress tracking
+    Key fixes for OCR timeout issues:
+    - Added 30-second timeout per page
+    - Page limit control (default: 20 pages)
+    - Reduced DPI settings (100-200)
+    - Batch processing to avoid memory issues
+    - Cancellable operations
+    - Better error handling
 
     Installation:
-    pip install gradio langchain langchain-community PyPDF2 python-docx openai nltk pdfplumber pytesseract pdf2image pillow opencv-python-headless
+    pip install gradio langchain langchain-community PyPDF2 python-docx openai nltk pdfplumber pytesseract pdf2image pillow opencv-python-headless psutil
 
     ====================================
     """)
