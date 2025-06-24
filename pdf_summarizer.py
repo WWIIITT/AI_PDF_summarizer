@@ -64,6 +64,8 @@ except ImportError:
 warnings.filterwarnings('ignore')
 
 # Download required NLTK data
+#nltk.download('punkt')
+
 try:
     # Try to find punkt tokenizer
     nltk.data.find('tokenizers/punkt')
