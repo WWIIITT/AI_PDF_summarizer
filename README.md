@@ -2,7 +2,7 @@
 
 <div align="center">
 
-[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![Gradio](https://img.shields.io/badge/Gradio-4.0+-orange.svg)](https://www.gradio.app/)
 [![DeepSeek](https://img.shields.io/badge/API-DeepSeek-purple.svg)](https://www.deepseek.com/)
 
@@ -48,7 +48,7 @@ An intelligent document summarization tool powered by DeepSeek API with OCR capa
 
 ### Prerequisites | 前置要求
 
-- Python 3.8 or higher | Python 3.8或更高版本
+- Python 3.9 or higher | Python 3.9或更高版本
 - DeepSeek API Key | DeepSeek API密钥
 - Tesseract OCR (for OCR features) | Tesseract OCR（用于OCR功能）
 
