@@ -868,10 +868,196 @@ class OptimizedDocumentSummarizer:
         self.cancel_processing = True
 
 
+# CSS for the cat animation
+CAT_ANIMATION_CSS = """
+<style>
+.cat-animation-container {
+    height: 60px;
+    position: relative;
+    overflow: hidden;
+    margin: 30px 0 20px 0;
+}
+
+.running-cat {
+    position: absolute;
+    width: 80px;
+    height: 60px;
+    animation: runCat 3s linear infinite;
+}
+
+@keyframes runCat {
+    0% {
+        left: -80px;
+        transform: scaleX(1);
+    }
+    45% {
+        left: 80%;
+        transform: scaleX(1);
+    }
+    50% {
+        left: 80%;
+        transform: scaleX(-1);
+    }
+    95% {
+        left: -80px;
+        transform: scaleX(-1);
+    }
+    100% {
+        left: -80px;
+        transform: scaleX(1);
+    }
+}
+
+.cat-body {
+    width: 50px;
+    height: 30px;
+    background: #4F86F7;
+    border-radius: 25px 25px 20px 20px;
+    position: absolute;
+    top: 20px;
+    left: 15px;
+}
+
+.cat-head {
+    width: 35px;
+    height: 35px;
+    background: #4F86F7;
+    border-radius: 50%;
+    position: absolute;
+    top: 10px;
+    left: 40px;
+}
+
+.cat-ear-left, .cat-ear-right {
+    width: 0;
+    height: 0;
+    border-left: 8px solid transparent;
+    border-right: 8px solid transparent;
+    border-bottom: 15px solid #4F86F7;
+    position: absolute;
+    top: 5px;
+}
+
+.cat-ear-left {
+    left: 38px;
+    transform: rotate(-30deg);
+}
+
+.cat-ear-right {
+    left: 55px;
+    transform: rotate(30deg);
+}
+
+.cat-tail {
+    width: 30px;
+    height: 20px;
+    background: #4F86F7;
+    border-radius: 20px 0 0 20px;
+    position: absolute;
+    top: 15px;
+    left: 0;
+    transform-origin: right center;
+    animation: wagTail 0.5s ease-in-out infinite;
+}
+
+@keyframes wagTail {
+    0% {
+        transform: rotate(-10deg);
+    }
+    50% {
+        transform: rotate(10deg);
+    }
+    100% {
+        transform: rotate(-10deg);
+    }
+}
+
+.cat-leg {
+    width: 8px;
+    height: 15px;
+    background: #4F86F7;
+    position: absolute;
+    bottom: 0;
+    border-radius: 0 0 5px 5px;
+    animation: runLegs 0.3s ease-in-out infinite;
+}
+
+.cat-leg1 { left: 20px; animation-delay: 0s; }
+.cat-leg2 { left: 30px; animation-delay: 0.15s; }
+.cat-leg3 { left: 45px; animation-delay: 0.1s; }
+.cat-leg4 { left: 55px; animation-delay: 0.25s; }
+
+@keyframes runLegs {
+    0%, 100% {
+        height: 15px;
+    }
+    50% {
+        height: 10px;
+    }
+}
+
+.cat-eye {
+    width: 4px;
+    height: 4px;
+    background: white;
+    border-radius: 50%;
+    position: absolute;
+    top: 18px;
+}
+
+.cat-eye-left { left: 50px; }
+.cat-eye-right { left: 60px; }
+
+.cat-whisker {
+    width: 15px;
+    height: 1px;
+    background: #3366CC;
+    position: absolute;
+    top: 22px;
+}
+
+.cat-whisker1 { left: 65px; transform: rotate(10deg); }
+.cat-whisker2 { left: 65px; transform: rotate(-10deg); }
+
+/* Custom HTML output styling */
+#summary_output {
+    min-height: 400px;
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    overflow-y: auto;
+    max-height: 600px;
+}
+</style>
+"""
+
+# HTML for the cat animation
+CAT_ANIMATION_HTML = """
+<div class="cat-animation-container">
+    <div class="running-cat">
+        <div class="cat-tail"></div>
+        <div class="cat-body"></div>
+        <div class="cat-head"></div>
+        <div class="cat-ear-left"></div>
+        <div class="cat-ear-right"></div>
+        <div class="cat-eye cat-eye-left"></div>
+        <div class="cat-eye cat-eye-right"></div>
+        <div class="cat-whisker cat-whisker1"></div>
+        <div class="cat-whisker cat-whisker2"></div>
+        <div class="cat-leg cat-leg1"></div>
+        <div class="cat-leg cat-leg2"></div>
+        <div class="cat-leg cat-leg3"></div>
+        <div class="cat-leg cat-leg4"></div>
+    </div>
+</div>
+"""
+
+
 def create_optimized_gradio_interface():
     """Create the optimized Gradio interface"""
 
     summarizer = None
+    is_processing = False
 
     def set_api_key(api_key):
         """Initialize summarizer with API key"""
@@ -981,24 +1167,50 @@ def create_optimized_gradio_interface():
     def process_document(file, summary_type, include_quotes, use_ocr, ocr_language,
                          output_language, quality, max_ocr_pages, progress=gr.Progress()):
         """Process document with progress tracking"""
-        nonlocal summarizer
+        nonlocal summarizer, is_processing
 
         if summarizer is None:
-            return "❌ 请先设置您的DeepSeek API密钥！Please set your DeepSeek API key first!"
+            return "<div style='padding: 20px; color: red;'>❌ 请先设置您的DeepSeek API密钥！Please set your DeepSeek API key first!</div>"
 
         if file is None:
-            return "❌ 请上传文件！Please upload a file!"
+            return "<div style='padding: 20px; color: red;'>❌ 请上传文件！Please upload a file!</div>"
 
+        is_processing = True
         start_time = time.time()
 
         try:
-            # Progress callback
+            # Initial HTML with cat animation
+            initial_html = f"""
+            <div style='padding: 20px;'>
+                {CAT_ANIMATION_HTML}
+                <div style='text-align: center; margin-top: 20px;'>
+                    <p>开始提取文本... Starting text extraction...</p>
+                </div>
+            </div>
+            """
+
+            # Progress callback that updates HTML
+            current_progress_html = [initial_html]
+
             def update_progress(value, desc):
                 elapsed = time.time() - start_time
-                progress(value, desc=f"{desc} (已用时 Elapsed: {elapsed:.1f}s)")
+                progress_html = f"""
+                <div style='padding: 20px;'>
+                    {CAT_ANIMATION_HTML}
+                    <div style='text-align: center; margin-top: 20px;'>
+                        <p>{desc} (已用时 Elapsed: {elapsed:.1f}s)</p>
+                        <div style='width: 100%; background-color: #e0e0e0; border-radius: 5px; overflow: hidden; margin-top: 10px;'>
+                            <div style='width: {value * 100}%; background-color: #4F86F7; height: 20px; transition: width 0.3s;'></div>
+                        </div>
+                        <p style='margin-top: 5px;'>{value * 100:.1f}%</p>
+                    </div>
+                </div>
+                """
+                current_progress_html[0] = progress_html
+                progress(value, desc=desc)
 
             # Extract text
-            progress(0.1, desc="开始提取文本... Starting text extraction...")
+            update_progress(0.1, "开始提取文本... Starting text extraction...")
 
             # Temporarily disable OCR if requested
             original_ocr_state = summarizer.ocr_available
@@ -1017,27 +1229,40 @@ def create_optimized_gradio_interface():
             summarizer.ocr_available = original_ocr_state
 
             if text.startswith("Error") or text.startswith("❌") or text.startswith("用户已取消"):
-                return text
+                is_processing = False
+                return f"<div style='padding: 20px; color: red;'>{text}</div>"
 
             if len(text.strip()) < 10:
-                return "❌ 文档中未找到可读文本。No readable text found in the document."
+                is_processing = False
+                return "<div style='padding: 20px; color: red;'>❌ 文档中未找到可读文本。No readable text found in the document.</div>"
 
             # Show text statistics
-            progress(0.5, desc=f"文本提取完成，长度: {len(text)} 字符 Text extracted, length: {len(text)} characters")
+            update_progress(0.5, f"文本提取完成，长度: {len(text)} 字符 Text extracted, length: {len(text)} characters")
 
             # Generate summary
-            progress(0.5, desc="生成摘要... Generating summary...")
+            update_progress(0.5, "生成摘要... Generating summary...")
+
+            # Create a progress tracking for streaming
+            last_update_time = [time.time()]
+            accumulated_text = [""]
+
+            def streaming_update_progress(value, desc):
+                current_time = time.time()
+                # Update UI less frequently to avoid overwhelming
+                if current_time - last_update_time[0] > 0.5:  # Update every 0.5 seconds
+                    update_progress(value, desc)
+                    last_update_time[0] = current_time
 
             summary = summarizer.summarize_text_streaming(
                 text,
                 summary_type,
                 include_quotes,
                 output_language,
-                progress_callback=update_progress
+                progress_callback=streaming_update_progress
             )
 
             elapsed_time = time.time() - start_time
-            progress(1.0, desc=f"完成！总用时: {elapsed_time:.1f}秒 Complete! Total time: {elapsed_time:.1f}s")
+            update_progress(1.0, f"完成！总用时: {elapsed_time:.1f}秒 Complete! Total time: {elapsed_time:.1f}s")
 
             # Add processing stats
             stats = f"\n\n---\n⏱️ 处理统计 Processing Stats:\n"
@@ -1045,11 +1270,18 @@ def create_optimized_gradio_interface():
             stats += f"• 文本长度 Text length: {len(text):,} 字符 characters\n"
             stats += f"• 文档块数 Document chunks: {len(summarizer.text_splitter.split_text(text))}\n"
 
-            return summary + stats
+            # Final result without cat animation
+            final_html = f"""
+            <div style='padding: 20px; white-space: pre-wrap; font-family: monospace;'>{summary + stats}</div>
+            """
+
+            is_processing = False
+            return final_html
 
         except Exception as e:
             elapsed_time = time.time() - start_time
-            return f"❌ 错误 Error: {str(e)}\n⏱️ 失败时间 Failed after: {elapsed_time:.1f}秒 seconds"
+            is_processing = False
+            return f"<div style='padding: 20px; color: red;'>❌ 错误 Error: {str(e)}\n⏱️ 失败时间 Failed after: {elapsed_time:.1f}秒 seconds</div>"
 
     def clear_cache():
         """Clear the document cache"""
@@ -1076,11 +1308,13 @@ def create_optimized_gradio_interface():
         nonlocal summarizer
         if summarizer:
             summarizer.cancel_current_processing()
-            return "⚠️ 已请求取消处理... Processing cancellation requested..."
-        return "没有活动的处理可取消 No active processing to cancel"
+            return "<div style='padding: 20px; color: orange;'>⚠️ 已请求取消处理... Processing cancellation requested...</div>"
+        return "<div style='padding: 20px;'>没有活动的处理可取消 No active processing to cancel</div>"
 
-    # Create the interface
-    with gr.Blocks(title="优化的文档摘要生成器 Optimized Document Summarizer", theme=gr.themes.Soft()) as interface:
+    # Create the interface with custom CSS
+    with gr.Blocks(title="优化的文档摘要生成器 Optimized Document Summarizer",
+                   theme=gr.themes.Soft(),
+                   css=CAT_ANIMATION_CSS) as interface:
         gr.Markdown(
             """
             # ⚡ 高速优化文档摘要生成器 (修复版)
@@ -1094,6 +1328,7 @@ def create_optimized_gradio_interface():
             - 💾 更好的错误处理和恢复 | Better error handling and recovery
             - 📊 实时处理统计 | Real-time processing statistics
             - 🚀 优化的处理流程 | Optimized processing flow
+            - 🐱 可爱的蓝色小猫动画 | Cute blue cat animation
             """
         )
 
@@ -1199,11 +1434,11 @@ def create_optimized_gradio_interface():
                     cancel_button = gr.Button("⏹️ 取消 Cancel", variant="stop", size="sm")
 
         gr.Markdown("### 📋 摘要输出 Summary Output")
-        output_text = gr.Textbox(
+
+        output_text = gr.HTML(
             label="摘要 Summary",
-            lines=20,
-            max_lines=50,
-            interactive=False
+            value="",
+            elem_id="summary_output"
         )
 
         # Event handlers
@@ -1225,7 +1460,24 @@ def create_optimized_gradio_interface():
             outputs=[analysis_output]
         )
 
+        # Modified summarize button click handler
+        def handle_summarize_click():
+            # Show initial cat animation
+            initial_html = f"""
+            <div style='padding: 20px;'>
+                <div style='text-align: center; margin-bottom: 40px;'>
+                    <p>准备处理... Preparing to process...</p>
+                </div>
+                {CAT_ANIMATION_HTML}
+            </div>
+            """
+            return initial_html
+
         summarize_button.click(
+            fn=handle_summarize_click,
+            inputs=[],
+            outputs=[output_text]
+        ).then(
             fn=process_document,
             inputs=[file_input, summary_type, include_quotes, use_ocr, ocr_language,
                     output_language, quality, max_ocr_pages],
@@ -1278,7 +1530,7 @@ def create_optimized_gradio_interface():
 
             ### 🔧 技术限制 Technical Limits:
 
-            - 最大文本: 100,000字符 Max text: 100,000 characters
+            - 最大文本: 200,000字符 Max text: 200,000 characters
             - 最大块数: 20 Max chunks: 20
             - API超时: 60秒 API timeout: 60s
             - 总超时: 300秒 Total timeout: 300s
@@ -1303,6 +1555,7 @@ if __name__ == "__main__":
     - 优化的默认设置 Optimized default settings
     - 文本预览功能 Text preview feature
     - 处理时间统计 Processing time statistics
+    - 🐱 蓝色小猫动画 Blue cat animation
 
     ====================================
     """)
