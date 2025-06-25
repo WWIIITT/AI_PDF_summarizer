@@ -188,7 +188,7 @@ class OptimizedDocumentSummarizer:
         self.cancel_processing = False
 
         # Maximum text length to process (characters)
-        self.max_text_length = 150000  # ~150k characters max
+        self.max_text_length = 200000  # ~200k characters max
 
         # Maximum chunks to process
         self.max_chunks = 20
@@ -921,7 +921,7 @@ def create_optimized_gradio_interface():
 • **预计处理时间 Estimated Time:** {analysis['estimated_time']}
 
 ⚠️ **重要限制 Important Limits:**
-• 最大文本长度 Max text length: 100,000 字符 characters
+• 最大文本长度 Max text length: 200,000 字符 characters
 • 最大文档块 Max chunks: 20
 • API超时 API timeout: 60 秒 seconds
 • 总处理超时 Total timeout: 5 分钟 minutes
@@ -1089,7 +1089,7 @@ def create_optimized_gradio_interface():
 
             **🔧 主要修复 Main Fixes:**
             - ⏱️ API调用超时保护（60秒）| API call timeout protection (60s)
-            - 📏 文本长度限制（100k字符）| Text length limit (100k characters)
+            - 📏 文本长度限制（200k字符）| Text length limit (200k characters)
             - 🔢 文档块数限制（最多20块）| Document chunk limit (max 20)
             - 💾 更好的错误处理和恢复 | Better error handling and recovery
             - 📊 实时处理统计 | Real-time processing statistics
