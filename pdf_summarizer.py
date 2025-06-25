@@ -30,6 +30,7 @@ import gc
 import psutil
 import asyncio
 from datetime import datetime
+import requests
 
 # Suppress warnings
 logging.getLogger("langchain.text_splitter").setLevel(logging.ERROR)
@@ -71,6 +72,148 @@ try:
 except LookupError:
     print("Downloading NLTK punkt tokenizer...")
     nltk.download('punkt', quiet=True)
+
+
+class ModelConfig:
+    """Configuration for different AI models"""
+
+    MODELS = {
+        "deepseek-chat": {
+            "name": "🚀 DeepSeek Chat",
+            "provider": "deepseek",
+            "api_base": "https://api.deepseek.com",
+            "model_name": "deepseek-chat",
+            "max_tokens": 1024,
+            "temperature": 0.3,
+            "supports_streaming": True,
+            "api_key_placeholder": "输入您的DeepSeek API密钥... Enter your DeepSeek API key...",
+            "api_key_help": "获取API密钥：https://platform.deepseek.com/api_keys"
+        },
+        "doubao-pro-4k": {
+            "name": "🌊 豆包 Pro 4K (ByteDance)",
+            "provider": "doubao",
+            "api_base": "https://ark.cn-beijing.volces.com/api/v3",
+            "model_name": "doubao-pro-4k",
+            "max_tokens": 1024,
+            "temperature": 0.3,
+            "supports_streaming": True,
+            "api_key_placeholder": "输入您的豆包API密钥... Enter your Doubao API key...",
+            "api_key_help": "获取API密钥：https://console.volcengine.com/ark"
+        },
+        "doubao-lite-4k": {
+            "name": "🌊 豆包 Lite 4K (ByteDance)",
+            "provider": "doubao",
+            "api_base": "https://ark.cn-beijing.volces.com/api/v3",
+            "model_name": "doubao-lite-4k",
+            "max_tokens": 1024,
+            "temperature": 0.3,
+            "supports_streaming": True,
+            "api_key_placeholder": "输入您的豆包API密钥... Enter your Doubao API key...",
+            "api_key_help": "获取API密钥：https://console.volcengine.com/ark"
+        },
+        "ollama-llama3": {
+            "name": "🦙 Ollama Llama 3",
+            "provider": "ollama",
+            "api_base": "http://localhost:11434",
+            "model_name": "llama3",
+            "max_tokens": 1024,
+            "temperature": 0.3,
+            "supports_streaming": False,
+            "api_key_placeholder": "Ollama本地运行，无需API密钥 Ollama runs locally, no API key needed",
+            "api_key_help": "确保Ollama正在运行：ollama serve"
+        },
+        "ollama-qwen": {
+            "name": "🦙 Ollama Qwen",
+            "provider": "ollama",
+            "api_base": "http://localhost:11434",
+            "model_name": "qwen",
+            "max_tokens": 1024,
+            "temperature": 0.3,
+            "supports_streaming": False,
+            "api_key_placeholder": "Ollama本地运行，无需API密钥 Ollama runs locally, no API key needed",
+            "api_key_help": "确保Ollama正在运行：ollama serve"
+        },
+        "ollama-mistral": {
+            "name": "🦙 Ollama Mistral",
+            "provider": "ollama",
+            "api_base": "http://localhost:11434",
+            "model_name": "mistral",
+            "max_tokens": 1024,
+            "temperature": 0.3,
+            "supports_streaming": False,
+            "api_key_placeholder": "Ollama本地运行，无需API密钥 Ollama runs locally, no API key needed",
+            "api_key_help": "确保Ollama正在运行：ollama serve"
+        }
+    }
+
+    @classmethod
+    def get_model_choices(cls):
+        """Get model choices for UI dropdown"""
+        return [(config["name"], model_id) for model_id, config in cls.MODELS.items()]
+
+    @classmethod
+    def get_config(cls, model_id):
+        """Get configuration for a specific model"""
+        return cls.MODELS.get(model_id)
+
+
+class OllamaClient:
+    """Custom Ollama client for local models"""
+
+    def __init__(self, base_url="http://localhost:11434", model_name="llama3"):
+        self.base_url = base_url.rstrip('/')
+        self.model_name = model_name
+
+    def _make_request(self, endpoint, data):
+        """Make HTTP request to Ollama API"""
+        url = f"{self.base_url}/{endpoint}"
+        try:
+            response = requests.post(url, json=data, timeout=120, stream=False)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Ollama API error: {str(e)}")
+
+    def generate(self, prompt, max_tokens=1024, temperature=0.3):
+        """Generate text using Ollama"""
+        data = {
+            "model": self.model_name,
+            "prompt": prompt,
+            "options": {
+                "num_predict": max_tokens,
+                "temperature": temperature
+            },
+            "stream": False
+        }
+
+        try:
+            result = self._make_request("api/generate", data)
+            return result.get("response", "")
+        except Exception as e:
+            return f"Ollama生成错误 Ollama generation error: {str(e)}"
+
+    def chat(self, messages, max_tokens=1024, temperature=0.3):
+        """Chat with Ollama using message format"""
+        # Convert messages to a single prompt
+        prompt_parts = []
+        for msg in messages:
+            if hasattr(msg, 'content'):
+                content = msg.content
+            else:
+                content = str(msg)
+
+            if hasattr(msg, 'type'):
+                if msg.type == 'system':
+                    prompt_parts.append(f"System: {content}")
+                elif msg.type == 'human':
+                    prompt_parts.append(f"Human: {content}")
+                else:
+                    prompt_parts.append(content)
+            else:
+                prompt_parts.append(content)
+
+        prompt = "\n\n".join(prompt_parts) + "\n\nAssistant:"
+        return self.generate(prompt, max_tokens, temperature)
 
 
 class DocumentCache:
@@ -151,22 +294,21 @@ class DocumentCache:
 
 
 class OptimizedDocumentSummarizer:
-    def __init__(self, api_key):
-        # Initialize LLM with timeout and reduced token limits
-        self.llm = ChatOpenAI(
-            model='deepseek-chat',
-            openai_api_key=api_key,
-            openai_api_base='https://api.deepseek.com',
-            max_tokens=1024,  # Reduced from 2048
-            temperature=0.3,
-            streaming=True,
-            request_timeout=60  # 60 second timeout for API calls
-        )
+    def __init__(self, model_id="deepseek-chat", api_key=None):
+        self.model_id = model_id
+        self.model_config = ModelConfig.get_config(model_id)
+        self.api_key = api_key
+
+        if not self.model_config:
+            raise ValueError(f"Unsupported model: {model_id}")
+
+        # Initialize the appropriate client
+        self._initialize_client()
 
         # Text splitters with smaller chunks
         self.text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=2000,  # Reduced from 4000
-            chunk_overlap=200,  # Reduced from 400
+            chunk_size=2000,
+            chunk_overlap=200,
             length_function=len,
             separators=["\n\n", "\n", "。", ". ", "！", "! ", "？", "? ", "；", "; ", " ", ""],
             is_separator_regex=False
@@ -188,10 +330,54 @@ class OptimizedDocumentSummarizer:
         self.cancel_processing = False
 
         # Maximum text length to process (characters)
-        self.max_text_length = 200000  # ~200k characters max
+        self.max_text_length = 200000
 
         # Maximum chunks to process
         self.max_chunks = 20
+
+    def _initialize_client(self):
+        """Initialize the appropriate client based on model provider"""
+        provider = self.model_config["provider"]
+
+        if provider == "ollama":
+            # Initialize Ollama client
+            self.llm = None  # Will use custom client
+            self.ollama_client = OllamaClient(
+                base_url=self.model_config["api_base"],
+                model_name=self.model_config["model_name"]
+            )
+        else:
+            # Initialize OpenAI-compatible client (DeepSeek, Doubao)
+            self.llm = ChatOpenAI(
+                model=self.model_config["model_name"],
+                openai_api_key=self.api_key or "dummy-key",
+                openai_api_base=self.model_config["api_base"],
+                max_tokens=self.model_config["max_tokens"],
+                temperature=self.model_config["temperature"],
+                streaming=self.model_config["supports_streaming"],
+                request_timeout=60
+            )
+            self.ollama_client = None
+
+    def test_connection(self):
+        """Test connection to the model"""
+        try:
+            if self.model_config["provider"] == "ollama":
+                # Test Ollama connection
+                test_response = self.ollama_client.generate("Test", max_tokens=10)
+                if "error" in test_response.lower():
+                    return False, test_response
+                return True, "Ollama连接成功 Ollama connection successful"
+            else:
+                # Test OpenAI-compatible API
+                test_messages = [
+                    SystemMessage(content="You are a helpful assistant."),
+                    HumanMessage(content="Hello")
+                ]
+                response = self.llm.invoke(test_messages)
+                return True, f"{self.model_config['name']} 连接成功 connection successful"
+        except Exception as e:
+            return False, f"连接失败 Connection failed: {str(e)}"
 
     def configure_ocr(self):
         """Configure OCR settings"""
@@ -229,7 +415,7 @@ class OptimizedDocumentSummarizer:
                 total_pages = len(pdf.pages)
 
                 # Limit pages for very large PDFs
-                max_pages_to_extract = min(total_pages, 100)  # Max 100 pages
+                max_pages_to_extract = min(total_pages, 100)
 
                 if total_pages > max_pages_to_extract:
                     if progress_callback:
@@ -644,7 +830,7 @@ class OptimizedDocumentSummarizer:
             return text
 
         # Check cache for summary
-        cache_key = f"summary_{summary_type}_{include_quotes}_{output_language}"
+        cache_key = f"summary_{summary_type}_{include_quotes}_{output_language}_{self.model_id}"
         text_hash = hashlib.md5(text.encode()).hexdigest()
         cached_summary = self.cache.get(text_hash, cache_key)
         if cached_summary:
@@ -750,28 +936,38 @@ class OptimizedDocumentSummarizer:
                 if len(documents) <= 5:
                     combined_text = "\n\n".join([doc.page_content for doc in documents])
 
-                    # Single API call for small documents
-                    messages = [
-                        SystemMessage(content="你是专业的文档分析师。You are a professional document analyst."),
-                        HumanMessage(content=prompt_template.format(text=combined_text))
-                    ]
+                    # Generate summary based on model type
+                    if self.model_config["provider"] == "ollama":
+                        # Use Ollama client
+                        summary = self._generate_with_ollama(prompt_template.format(text=combined_text),
+                                                             progress_callback)
+                    else:
+                        # Use OpenAI-compatible client with streaming
+                        messages = [
+                            SystemMessage(content="你是专业的文档分析师。You are a professional document analyst."),
+                            HumanMessage(content=prompt_template.format(text=combined_text))
+                        ]
 
-                    summary = ""
-                    chunk_count = 0
+                        summary = ""
+                        chunk_count = 0
 
-                    try:
-                        for chunk in self.llm.stream(messages):
-                            if self.cancel_processing:
-                                return "用户已取消处理。Processing cancelled by user."
+                        try:
+                            if self.model_config["supports_streaming"]:
+                                for chunk in self.llm.stream(messages):
+                                    if self.cancel_processing:
+                                        return "用户已取消处理。Processing cancelled by user."
 
-                            summary += chunk.content
-                            chunk_count += 1
+                                    summary += chunk.content
+                                    chunk_count += 1
 
-                            if progress_callback and chunk_count % 10 == 0:
-                                progress_callback(0.5 + 0.4 * min(chunk_count / 100, 1),
-                                                  "生成摘要中... Generating summary...")
-                    except Exception as e:
-                        return f"API调用失败 API call failed: {str(e)}"
+                                    if progress_callback and chunk_count % 10 == 0:
+                                        progress_callback(0.5 + 0.4 * min(chunk_count / 100, 1),
+                                                          "生成摘要中... Generating summary...")
+                            else:
+                                response = self.llm.invoke(messages)
+                                summary = response.content
+                        except Exception as e:
+                            return f"API调用失败 API call failed: {str(e)}"
 
                 else:
                     # For larger documents, process in batches
@@ -789,13 +985,18 @@ class OptimizedDocumentSummarizer:
                             progress_callback(0.3 + 0.4 * (i / len(documents)),
                                               f"处理批次 {i // batch_size + 1}/{(len(documents) + batch_size - 1) // batch_size}... Processing batch {i // batch_size + 1}/{(len(documents) + batch_size - 1) // batch_size}...")
 
-                        messages = [
-                            SystemMessage(content="总结这部分内容。Summarize this section."),
-                            HumanMessage(content=f"{lang_instruction}\n\n{batch_text}\n\n摘要 SUMMARY:")
-                        ]
+                        batch_prompt = f"{lang_instruction}\n\n{batch_text}\n\n摘要 SUMMARY:"
 
                         try:
-                            batch_summary = self.llm.invoke(messages).content
+                            if self.model_config["provider"] == "ollama":
+                                batch_summary = self._generate_with_ollama(batch_prompt)
+                            else:
+                                messages = [
+                                    SystemMessage(content="总结这部分内容。Summarize this section."),
+                                    HumanMessage(content=batch_prompt)
+                                ]
+                                batch_summary = self.llm.invoke(messages).content
+
                             batch_summaries.append(batch_summary)
                         except Exception as e:
                             print(f"批次处理失败 Batch processing failed: {str(e)}")
@@ -804,44 +1005,81 @@ class OptimizedDocumentSummarizer:
                     # Combine batch summaries
                     if batch_summaries:
                         combined_summaries = "\n\n".join(batch_summaries)
-                        final_messages = [
-                            SystemMessage(
-                                content="合并以下摘要为最终摘要。Combine these summaries into a final summary."),
-                            HumanMessage(content=prompt_template.format(text=combined_summaries))
-                        ]
+                        final_prompt = prompt_template.format(text=combined_summaries)
 
-                        summary = self.llm.invoke(final_messages).content
+                        if self.model_config["provider"] == "ollama":
+                            summary = self._generate_with_ollama(final_prompt)
+                        else:
+                            final_messages = [
+                                SystemMessage(
+                                    content="合并以下摘要为最终摘要。Combine these summaries into a final summary."),
+                                HumanMessage(content=final_prompt)
+                            ]
+                            summary = self.llm.invoke(final_messages).content
                     else:
                         return "无法生成摘要 Failed to generate summary"
 
             else:
                 # Direct summarization for single document
-                messages = [
-                    SystemMessage(content="你是专业的文档分析师。You are a professional document analyst."),
-                    HumanMessage(content=prompt_template.format(text=documents[0].page_content))
-                ]
+                if self.model_config["provider"] == "ollama":
+                    summary = self._generate_with_ollama(prompt_template.format(text=documents[0].page_content),
+                                                         progress_callback)
+                else:
+                    messages = [
+                        SystemMessage(content="你是专业的文档分析师。You are a professional document analyst."),
+                        HumanMessage(content=prompt_template.format(text=documents[0].page_content))
+                    ]
 
-                summary = ""
-                chunk_count = 0
+                    summary = ""
+                    chunk_count = 0
 
-                try:
-                    for chunk in self.llm.stream(messages):
-                        if self.cancel_processing:
-                            return "用户已取消处理。Processing cancelled by user."
+                    try:
+                        if self.model_config["supports_streaming"]:
+                            for chunk in self.llm.stream(messages):
+                                if self.cancel_processing:
+                                    return "用户已取消处理。Processing cancelled by user."
 
-                        summary += chunk.content
-                        chunk_count += 1
+                                summary += chunk.content
+                                chunk_count += 1
 
-                        if progress_callback and chunk_count % 10 == 0:
-                            progress_callback(0.5 + 0.4 * min(chunk_count / 100, 1),
-                                              "生成摘要中... Generating summary...")
-                except Exception as e:
-                    return f"API调用失败 API call failed: {str(e)}"
+                                if progress_callback and chunk_count % 10 == 0:
+                                    progress_callback(0.5 + 0.4 * min(chunk_count / 100, 1),
+                                                      "生成摘要中... Generating summary...")
+                        else:
+                            response = self.llm.invoke(messages)
+                            summary = response.content
+                    except Exception as e:
+                        return f"API调用失败 API call failed: {str(e)}"
 
             return self._format_summary(summary)
 
         except Exception as e:
             return f"摘要生成时出错 Error during summarization: {str(e)}"
+
+    def _generate_with_ollama(self, prompt, progress_callback=None):
+        """Generate text using Ollama"""
+        try:
+            if progress_callback:
+                progress_callback(0.5, "使用Ollama生成摘要... Generating summary with Ollama...")
+
+            # Create chat messages for Ollama
+            messages = [
+                SystemMessage(content="你是专业的文档分析师。You are a professional document analyst."),
+                HumanMessage(content=prompt)
+            ]
+
+            summary = self.ollama_client.chat(
+                messages,
+                max_tokens=self.model_config["max_tokens"],
+                temperature=self.model_config["temperature"]
+            )
+
+            if progress_callback:
+                progress_callback(0.9, "Ollama摘要生成完成 Ollama summary generation complete")
+
+            return summary
+        except Exception as e:
+            return f"Ollama生成失败 Ollama generation failed: {str(e)}"
 
     def _format_summary(self, summary: str) -> str:
         """Format summary for readability"""
@@ -859,7 +1097,8 @@ class OptimizedDocumentSummarizer:
                 re.findall(r'[\u4e00-\u9fff]', text[:1000])) > 100 else "英文 English",
             "text_quality": "损坏 Corrupted" if self.is_text_corrupted(text) else "良好 Good",
             "recommended_summary": "详细 detailed" if len(text.split()) > 5000 else "简洁 concise",
-            "estimated_time": f"{max(1, len(text) // 10000)} 分钟 minutes"
+            "estimated_time": f"{max(1, len(text) // 10000)} 分钟 minutes",
+            "current_model": self.model_config["name"]
         }
         return analysis
 
@@ -1028,6 +1267,23 @@ CAT_ANIMATION_CSS = """
     overflow-y: auto;
     max-height: 600px;
 }
+
+/* Model selection styling */
+.model-selector {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 10px;
+    padding: 15px;
+    margin: 10px 0;
+    color: white;
+}
+
+.model-info {
+    background: #f8f9fa;
+    border-radius: 8px;
+    padding: 10px;
+    margin: 10px 0;
+    border-left: 4px solid #007bff;
+}
 </style>
 """
 
@@ -1054,32 +1310,64 @@ CAT_ANIMATION_HTML = """
 
 
 def create_optimized_gradio_interface():
-    """Create the optimized Gradio interface"""
+    """Create the optimized Gradio interface with model selection"""
 
     summarizer = None
     is_processing = False
 
-    def set_api_key(api_key):
-        """Initialize summarizer with API key"""
-        nonlocal summarizer
-        if api_key.strip():
-            try:
-                summarizer = OptimizedDocumentSummarizer(api_key.strip())
-                ocr_status = "✅ OCR可用 OCR Available" if summarizer.ocr_available else "⚠️ OCR不可用 OCR Not Available"
-                chinese_status = "✅ 中文OCR就绪 Chinese OCR Ready" if summarizer.chinese_ocr_available else "⚠️ 中文OCR未就绪 Chinese OCR Not Ready"
+    def update_model_info(model_id):
+        """Update model information display"""
+        config = ModelConfig.get_config(model_id)
+        if config:
+            info_html = f"""
+            <div class="model-info">
+                <h4>🤖 模型信息 Model Information</h4>
+                <p><strong>模型名称 Model:</strong> {config['name']}</p>
+                <p><strong>提供商 Provider:</strong> {config['provider'].upper()}</p>
+                <p><strong>API地址 API Base:</strong> <code>{config['api_base']}</code></p>
+                <p><strong>流式输出 Streaming:</strong> {'✅ 支持 Supported' if config['supports_streaming'] else '❌ 不支持 Not Supported'}</p>
+                <p><strong>获取API密钥 Get API Key:</strong> {config['api_key_help']}</p>
+            </div>
+            """
+            return info_html, config['api_key_placeholder']
+        return "", "Enter API key..."
 
-                return f"✅ API密钥设置成功！API Key set successfully! | {ocr_status} | {chinese_status}"
-            except Exception as e:
-                return f"❌ 错误 Error: {str(e)}"
-        else:
+    def set_api_key(model_id, api_key):
+        """Initialize summarizer with selected model and API key"""
+        nonlocal summarizer
+
+        config = ModelConfig.get_config(model_id)
+        if not config:
+            return "❌ 无效的模型选择 Invalid model selection"
+
+        # For Ollama, we don't need an API key
+        if config["provider"] == "ollama":
+            api_key = "dummy-key"  # Ollama doesn't need real API key
+        elif not api_key or not api_key.strip():
             return "❌ 请输入有效的API密钥 Please enter a valid API key"
+
+        try:
+            summarizer = OptimizedDocumentSummarizer(model_id, api_key.strip())
+
+            # Test connection
+            connection_ok, message = summarizer.test_connection()
+            if not connection_ok:
+                return f"❌ 连接测试失败 Connection test failed: {message}"
+
+            # OCR status
+            ocr_status = "✅ OCR可用 OCR Available" if summarizer.ocr_available else "⚠️ OCR不可用 OCR Not Available"
+            chinese_status = "✅ 中文OCR就绪 Chinese OCR Ready" if summarizer.chinese_ocr_available else "⚠️ 中文OCR未就绪 Chinese OCR Not Ready"
+
+            return f"✅ {config['name']} 连接成功！Connected successfully! | {ocr_status} | {chinese_status}\n\n测试响应 Test Response: {message}"
+        except Exception as e:
+            return f"❌ 错误 Error: {str(e)}"
 
     def analyze_document(file):
         """Quick document analysis"""
         nonlocal summarizer
 
         if summarizer is None:
-            return "❌ 请先设置您的DeepSeek API密钥！Please set your DeepSeek API key first!"
+            return "❌ 请先设置模型和API密钥！Please set up model and API key first!"
 
         if file is None:
             return "❌ 请上传文件！Please upload a file!"
@@ -1098,6 +1386,7 @@ def create_optimized_gradio_interface():
 
             return f"""📊 **文档分析 Document Analysis:**
 
+• **当前模型 Current Model:** {analysis['current_model']}
 • **文件大小 File Size:** {file_size_mb:.2f} MB
 • **总词数 Total Words:** {analysis['total_words']:,}
 • **总字符 Total Characters:** {analysis['total_characters']:,}
@@ -1126,7 +1415,7 @@ def create_optimized_gradio_interface():
         nonlocal summarizer
 
         if summarizer is None:
-            return "❌ 请先设置您的DeepSeek API密钥！Please set your DeepSeek API key first!"
+            return "❌ 请先设置模型和API密钥！Please set up model and API key first!"
 
         if file is None:
             return "❌ 请上传文件！Please upload a file!"
@@ -1157,6 +1446,7 @@ def create_optimized_gradio_interface():
 
 总长度 Total Length: {len(text)} 字符 characters
 预计块数 Estimated Chunks: {len(summarizer.text_splitter.split_text(text))}
+当前模型 Current Model: {summarizer.model_config['name']}
 
 --- 预览 Preview ---
 {preview}
@@ -1170,7 +1460,7 @@ def create_optimized_gradio_interface():
         nonlocal summarizer, is_processing
 
         if summarizer is None:
-            return "<div style='padding: 20px; color: red;'>❌ 请先设置您的DeepSeek API密钥！Please set your DeepSeek API key first!</div>"
+            return "<div style='padding: 20px; color: red;'>❌ 请先设置模型和API密钥！Please set up model and API key first!</div>"
 
         if file is None:
             return "<div style='padding: 20px; color: red;'>❌ 请上传文件！Please upload a file!</div>"
@@ -1184,7 +1474,8 @@ def create_optimized_gradio_interface():
             <div style='padding: 20px;'>
                 {CAT_ANIMATION_HTML}
                 <div style='text-align: center; margin-top: 20px;'>
-                    <p>开始提取文本... Starting text extraction...</p>
+                    <p>🤖 使用 {summarizer.model_config['name']} 开始处理...</p>
+                    <p>🤖 Processing with {summarizer.model_config['name']}...</p>
                 </div>
             </div>
             """
@@ -1198,6 +1489,7 @@ def create_optimized_gradio_interface():
                 <div style='padding: 20px;'>
                     {CAT_ANIMATION_HTML}
                     <div style='text-align: center; margin-top: 20px;'>
+                        <p>🤖 模型 Model: {summarizer.model_config['name']}</p>
                         <p>{desc} (已用时 Elapsed: {elapsed:.1f}s)</p>
                         <div style='width: 100%; background-color: #e0e0e0; border-radius: 5px; overflow: hidden; margin-top: 10px;'>
                             <div style='width: {value * 100}%; background-color: #4F86F7; height: 20px; transition: width 0.3s;'></div>
@@ -1240,7 +1532,8 @@ def create_optimized_gradio_interface():
             update_progress(0.5, f"文本提取完成，长度: {len(text)} 字符 Text extracted, length: {len(text)} characters")
 
             # Generate summary
-            update_progress(0.5, "生成摘要... Generating summary...")
+            update_progress(0.5,
+                            f"使用 {summarizer.model_config['name']} 生成摘要... Generating summary with {summarizer.model_config['name']}...")
 
             # Create a progress tracking for streaming
             last_update_time = [time.time()]
@@ -1266,6 +1559,7 @@ def create_optimized_gradio_interface():
 
             # Add processing stats
             stats = f"\n\n---\n⏱️ 处理统计 Processing Stats:\n"
+            stats += f"• 使用模型 Model used: {summarizer.model_config['name']}\n"
             stats += f"• 总用时 Total time: {elapsed_time:.1f} 秒 seconds\n"
             stats += f"• 文本长度 Text length: {len(text):,} 字符 characters\n"
             stats += f"• 文档块数 Document chunks: {len(summarizer.text_splitter.split_text(text))}\n"
@@ -1311,41 +1605,75 @@ def create_optimized_gradio_interface():
             return "<div style='padding: 20px; color: orange;'>⚠️ 已请求取消处理... Processing cancellation requested...</div>"
         return "<div style='padding: 20px;'>没有活动的处理可取消 No active processing to cancel</div>"
 
+    def test_ollama_connection():
+        """Test Ollama connection and list available models"""
+        try:
+            response = requests.get("http://localhost:11434/api/tags", timeout=5)
+            if response.status_code == 200:
+                models = response.json().get("models", [])
+                model_names = [model["name"] for model in models]
+                return f"✅ Ollama连接成功！Available models: {', '.join(model_names)}"
+            else:
+                return "❌ Ollama连接失败 Connection failed"
+        except Exception as e:
+            return f"❌ Ollama未运行或连接失败 Ollama not running or connection failed: {str(e)}"
+
     # Create the interface with custom CSS
-    with gr.Blocks(title="优化的文档摘要生成器 Optimized Document Summarizer",
+    with gr.Blocks(title="多模型文档摘要生成器 Multi-Model Document Summarizer",
                    theme=gr.themes.Soft(),
                    css=CAT_ANIMATION_CSS) as interface:
         gr.Markdown(
             """
-            # ⚡ 高速优化文档摘要生成器 (修复版)
-            # ⚡ Optimized Document Summarizer with Timeout Protection
-            ## 支持中英文的智能文档分析工具 | Intelligent Document Analysis Tool with Bilingual Support
+            # 🚀 多模型文档摘要生成器 Multi-Model Document Summarizer
+            ## 支持 DeepSeek、豆包、Ollama 等多种AI模型 | Support for DeepSeek, Doubao, Ollama and more
 
-            **🔧 主要修复 Main Fixes:**
-            - ⏱️ API调用超时保护（60秒）| API call timeout protection (60s)
-            - 📏 文本长度限制（200k字符）| Text length limit (200k characters)
-            - 🔢 文档块数限制（最多20块）| Document chunk limit (max 20)
-            - 💾 更好的错误处理和恢复 | Better error handling and recovery
-            - 📊 实时处理统计 | Real-time processing statistics
-            - 🚀 优化的处理流程 | Optimized processing flow
-            - 🐱 可爱的蓝色小猫动画 | Cute blue cat animation
+            **🎯 支持的模型 Supported Models:**
+            - 🚀 DeepSeek Chat - 深度求索的强大对话模型
+            - 🌊 豆包 Pro/Lite - 字节跳动的智能对话助手
+            - 🦙 Ollama - 本地运行的开源模型 (Llama3, Qwen, Mistral等)
+
+            **✨ 新功能 New Features:**
+            - 🔄 灵活的模型切换 Flexible model switching
+            - 🏠 本地模型支持 Local model support
+            - 🎨 更好的UI体验 Better UI experience
+            - 📊 详细的处理统计 Detailed processing stats
             """
         )
 
         with gr.Row():
             with gr.Column(scale=1):
-                gr.Markdown("### 🔑 API配置 API Configuration")
+                gr.Markdown("### 🤖 模型配置 Model Configuration")
+
+                # Model selection
+                model_selector = gr.Dropdown(
+                    choices=ModelConfig.get_model_choices(),
+                    value="deepseek-chat",
+                    label="选择AI模型 Select AI Model",
+                    elem_classes=["model-selector"]
+                )
+
+                # Model info display
+                model_info_display = gr.HTML(
+                    value="",
+                    label="模型信息 Model Information"
+                )
+
+                # API key input
                 api_key_input = gr.Textbox(
-                    label="DeepSeek API密钥 DeepSeek API Key",
-                    placeholder="输入您的DeepSeek API密钥... Enter your DeepSeek API key...",
+                    label="API密钥 API Key",
+                    placeholder="输入您的API密钥... Enter your API key...",
                     type="password"
                 )
-                api_key_button = gr.Button("设置API密钥 Set API Key", variant="primary")
-                api_key_status = gr.Textbox(label="状态 Status", interactive=False)
+
+                with gr.Row():
+                    api_key_button = gr.Button("🔑 设置模型 Setup Model", variant="primary")
+                    test_ollama_button = gr.Button("🦙 测试Ollama Test Ollama", variant="secondary")
+
+                api_key_status = gr.Textbox(label="连接状态 Connection Status", interactive=False, lines=4)
 
                 # Cache control
                 gr.Markdown("### 💾 缓存控制 Cache Control")
-                clear_cache_button = gr.Button("清除缓存 Clear Cache", variant="secondary")
+                clear_cache_button = gr.Button("🗑️ 清除缓存 Clear Cache", variant="secondary")
                 cache_status = gr.Textbox(label="缓存状态 Cache Status", interactive=False)
 
             with gr.Column(scale=2):
@@ -1385,14 +1713,14 @@ def create_optimized_gradio_interface():
                         ("⚖️ 平衡 Balanced (150 DPI)", "balanced"),
                         ("🎯 高质量 High Quality (200 DPI)", "high")
                     ],
-                    value="fast",  # Changed default to fast
+                    value="fast",
                     label="处理质量 Processing Quality"
                 )
 
                 max_ocr_pages = gr.Slider(
                     minimum=1,
                     maximum=50,
-                    value=10,  # Reduced default
+                    value=10,
                     step=1,
                     label="最大OCR页数 Maximum OCR Pages",
                     info="仅在启用OCR时使用 Only used when OCR is enabled"
@@ -1400,12 +1728,12 @@ def create_optimized_gradio_interface():
 
                 include_quotes = gr.Checkbox(
                     label="包含引用 Include quotes",
-                    value=False  # Changed default to False
+                    value=False
                 )
 
                 use_ocr = gr.Checkbox(
                     label="🔍 启用OCR Enable OCR (扫描文档 for scanned docs)",
-                    value=False  # Default to False
+                    value=False
                 )
 
                 ocr_language = gr.Radio(
@@ -1416,7 +1744,7 @@ def create_optimized_gradio_interface():
                     ],
                     value="auto",
                     label="OCR语言 OCR Language",
-                    visible=False  # Hide by default
+                    visible=False
                 )
 
                 output_language = gr.Radio(
@@ -1442,9 +1770,21 @@ def create_optimized_gradio_interface():
         )
 
         # Event handlers
+        model_selector.change(
+            fn=update_model_info,
+            inputs=[model_selector],
+            outputs=[model_info_display, api_key_input]
+        )
+
         api_key_button.click(
             fn=set_api_key,
-            inputs=[api_key_input],
+            inputs=[model_selector, api_key_input],
+            outputs=[api_key_status]
+        )
+
+        test_ollama_button.click(
+            fn=test_ollama_connection,
+            inputs=[],
             outputs=[api_key_status]
         )
 
@@ -1503,37 +1843,47 @@ def create_optimized_gradio_interface():
             outputs=[ocr_language]
         )
 
+        # Initialize model info on load
+        interface.load(
+            fn=update_model_info,
+            inputs=[model_selector],
+            outputs=[model_info_display, api_key_input]
+        )
+
         gr.Markdown(
             """
             ### 🚀 快速开始 Quick Start:
 
-            1. **设置API密钥** Set your DeepSeek API key
-            2. **上传文档** Upload your document
-            3. **点击"快速分析"查看文档信息** Click "Quick Analysis" to check document info
-            4. **选择"简洁"摘要类型** Select "Concise" summary type
-            5. **点击"生成摘要"** Click "Generate Summary"
+            1. **选择AI模型** Choose your AI model (DeepSeek/Doubao/Ollama)
+            2. **设置API密钥** Set your API key (not needed for Ollama)
+            3. **上传文档** Upload your document
+            4. **点击"快速分析"** Click "Quick Analysis" to check document info
+            5. **生成摘要** Click "Generate Summary"
 
-            ### ⚠️ 如果处理时间过长 If Processing Takes Too Long:
+            ### 🤖 模型说明 Model Instructions:
 
-            - **禁用OCR** Disable OCR if your PDF has selectable text
-            - **使用"简洁"模式** Use "Concise" mode
-            - **检查文档大小** Check document size in analysis
-            - **考虑分割大文档** Consider splitting large documents
-            - **点击"取消"停止处理** Click "Cancel" to stop processing
+            **DeepSeek Chat:**
+            - 获取API密钥：https://platform.deepseek.com/api_keys
+            - 支持流式输出，速度较快
+            - 适合大多数文档总结任务
 
-            ### 📊 性能基准 Performance Benchmarks:
+            **豆包 (Doubao):**
+            - 获取API密钥：https://console.volcengine.com/ark
+            - 字节跳动开发，中文理解能力强
+            - Pro版本功能更强，Lite版本速度更快
 
-            - 10页PDF（无OCR）: ~10-30秒 10-page PDF (no OCR): ~10-30s
-            - 50页PDF（无OCR）: ~30-60秒 50-page PDF (no OCR): ~30-60s
-            - 100页PDF（无OCR）: ~60-120秒 100-page PDF (no OCR): ~60-120s
-            - OCR处理: 每页+20-30秒 OCR processing: +20-30s per page
+            **Ollama:**
+            - 本地运行，无需API密钥
+            - 先安装Ollama：https://ollama.ai
+            - 启动服务：`ollama serve`
+            - 下载模型：`ollama pull llama3` 或 `ollama pull qwen`
 
-            ### 🔧 技术限制 Technical Limits:
+            ### ⚠️ 故障排除 Troubleshooting:
 
-            - 最大文本: 200,000字符 Max text: 200,000 characters
-            - 最大块数: 20 Max chunks: 20
-            - API超时: 60秒 API timeout: 60s
-            - 总超时: 300秒 Total timeout: 300s
+            - **连接失败**: 检查API密钥是否正确
+            - **Ollama连接失败**: 确保Ollama服务正在运行
+            - **处理超时**: 尝试使用更快的模型或减少文档大小
+            - **OCR失败**: 检查是否安装了OCR依赖
             """
         )
 
@@ -1543,19 +1893,20 @@ def create_optimized_gradio_interface():
 if __name__ == "__main__":
     print("""
     ====================================
-    优化的文档摘要生成器 (修复版)
-    OPTIMIZED DOCUMENT SUMMARIZER (FIXED)
+    多模型文档摘要生成器
+    MULTI-MODEL DOCUMENT SUMMARIZER
     ====================================
 
-    主要修复 Main fixes:
-    - API调用超时保护 API call timeout protection
-    - 文本长度限制 Text length limits
-    - 文档块数限制 Document chunk limits
-    - 更好的错误处理 Better error handling
-    - 优化的默认设置 Optimized default settings
-    - 文本预览功能 Text preview feature
-    - 处理时间统计 Processing time statistics
-    - 🐱 蓝色小猫动画 Blue cat animation
+    支持的模型 Supported Models:
+    - 🚀 DeepSeek Chat
+    - 🌊 豆包 Doubao (ByteDance)
+    - 🦙 Ollama (Local models)
+
+    新功能 New Features:
+    - 多模型选择 Multi-model selection
+    - 本地模型支持 Local model support
+    - 更好的UI体验 Better UI experience
+    - 详细的处理统计 Detailed processing stats
 
     ====================================
     """)
