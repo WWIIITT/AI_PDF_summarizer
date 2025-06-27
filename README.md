@@ -56,7 +56,7 @@ An intelligent document summarization tool powered by DeepSeek API with OCR capa
 
 1. **Clone the repository | 克隆仓库**
    ```bash
-   git clone https://github.com/yourusername/AI_PDF_summarizer.git
+   git clone https://github.com/WWIIITT/AI_PDF_summarizer.git
    cd AI_PDF_summarizer
    ```
 
