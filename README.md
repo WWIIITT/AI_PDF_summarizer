@@ -229,17 +229,6 @@ AI_PDF_summarizer/
 └── pdf_summarizer.py       # Main application file
 ```
 
-## 🤝 Contributing | 贡献
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-欢迎贡献！请随时提交Pull Request。
-
-1. Fork the repository | Fork仓库
-2. Create your feature branch | 创建功能分支 (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes | 提交更改 (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch | 推送到分支 (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request | 开启Pull Request
 
 
 ## 🙏 Acknowledgments | 致谢
