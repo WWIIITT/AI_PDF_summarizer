@@ -94,3 +94,6 @@ nltk_data/
 *.db
 *.sqlite
 *.sqlite3
+
+
+/.gradio
